@@ -9,6 +9,8 @@ import {
 } from "@/lib/prompts";
 import { callLLM, streamNIM } from "@/lib/llm";
 
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();

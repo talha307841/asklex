@@ -24,7 +24,21 @@ async function parseApiResponse(res: Response): Promise<Record<string, unknown>>
   }
 
   const text = await res.text();
-  return { error: text || `Request failed with status ${res.status}` };
+  const normalized = text.trim();
+
+  // Vercel/Next may return an HTML error document for platform-level failures.
+  if (normalized.startsWith("<!DOCTYPE html") || normalized.startsWith("<html")) {
+    if (res.status === 413) {
+      return { error: "Upload is too large for deployment limits. Use a smaller file or a URL." };
+    }
+    return { error: "Server error on deployment. Check API logs and try again." };
+  }
+
+  if (/request entity too large/i.test(normalized)) {
+    return { error: "Upload is too large for deployment limits. Use a smaller file or a URL." };
+  }
+
+  return { error: normalized || `Request failed with status ${res.status}` };
 }
 
 const MODE_LABELS: Record<Mode, string> = {
@@ -69,9 +83,10 @@ export default function AskLexApp() {
     }
 
     // Vercel serverless endpoints can reject larger multipart payloads.
-    if (file && file.size > 4 * 1024 * 1024) {
+    // Keep a margin below serverless multipart limits.
+    if (file && file.size > 3 * 1024 * 1024) {
       setIngestError(
-        "File is too large for deployment upload limits. Use a file under 4MB or ingest by URL."
+        "File is too large for deployment upload limits. Use a file under 3MB or ingest by URL."
       );
       return;
     }

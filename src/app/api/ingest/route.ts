@@ -7,6 +7,8 @@ import {
   insertChunks,
 } from "@/lib/memstore";
 
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
