@@ -1,0 +1,9 @@
+- [x] Verify that the copilot-instructions.md file in the .github directory is created.
+- [x] Clarify Project Requirements (Next.js + TypeScript app router).
+- [x] Scaffold the Project (create-next-app run in workspace root).
+- [x] Customize the Project (AskLex API, prompts, embeddings, retriever).
+- [x] Install Required Extensions (none required).
+- [x] Compile the Project (lint + build completed).
+- [x] Create and Run Task (not required for this setup).
+- [ ] Launch the Project (waiting on user confirmation for debug/launch).
+- [x] Ensure Documentation is Complete (README updated, comments removed).

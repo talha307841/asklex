@@ -15,6 +15,22 @@ interface LLMResponse {
   provider: string;
 }
 
+// Hard cap: keep total message text under ~20 000 chars (~5 000 tokens).
+// Trims the system message context section to fit.
+const MAX_TOTAL_CHARS = 20_000;
+
+function trimMessages(messages: LLMMessage[]): LLMMessage[] {
+  const total = messages.reduce((s, m) => s + m.content.length, 0);
+  if (total <= MAX_TOTAL_CHARS) return messages;
+
+  // Trim system message (which contains the retrieved context) proportionally
+  return messages.map((m) => {
+    if (m.role !== "system") return m;
+    const budget = MAX_TOTAL_CHARS - messages.filter((x) => x.role !== "system").reduce((s, x) => s + x.content.length, 0);
+    return { ...m, content: m.content.slice(0, Math.max(budget, 500)) };
+  });
+}
+
 async function callNIM(
   messages: LLMMessage[],
   model: string = NIM_MODELS.smart
@@ -27,7 +43,7 @@ async function callNIM(
     },
     body: JSON.stringify({
       model,
-      messages,
+      messages: trimMessages(messages),
       temperature: 0.2,
       max_tokens: 1024,
       stream: false,
@@ -48,13 +64,13 @@ async function callGroq(messages: LLMMessage[]): Promise<string> {
     },
     body: JSON.stringify({
       model: "llama-3.1-70b-versatile",
-      messages,
+      messages: trimMessages(messages),
       temperature: 0.2,
       max_tokens: 1024,
     }),
   });
 
-  if (!res.ok) throw new Error(`Groq error: ${res.status}`);
+  if (!res.ok) throw new Error(`Groq error: ${res.status} ${await res.text()}`);
   const data = await res.json();
   return data.choices[0].message.content;
 }
@@ -126,7 +142,7 @@ export async function* streamNIM(
     },
     body: JSON.stringify({
       model,
-      messages,
+      messages: trimMessages(messages),
       temperature: 0.2,
       max_tokens: 1024,
       stream: true,

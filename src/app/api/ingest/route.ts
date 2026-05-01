@@ -1,26 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { chunkText, extractPDFText } from "@/lib/chunker";
 import { embedBatch } from "@/lib/embedder";
-import { createClient } from "@supabase/supabase-js";
+import {
+  isSupabaseConfigured,
+  insertDocument,
+  insertChunks,
+} from "@/lib/memstore";
 
 export async function POST(req: NextRequest) {
   try {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      return NextResponse.json(
-        { error: "Supabase environment variables are missing." },
-        { status: 500 }
-      );
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     const url = formData.get("url") as string | null;
-    const mode = formData.get("mode") as string;
-    const title = formData.get("title") as string;
+    const mode = (formData.get("mode") as string) || "general";
+    const title = (formData.get("title") as string) || "Untitled";
     const country = formData.get("country") as string | null;
 
     let text = "";
@@ -28,7 +21,6 @@ export async function POST(req: NextRequest) {
 
     if (file) {
       const buffer = Buffer.from(await file.arrayBuffer());
-
       if (file.type === "application/pdf") {
         text = await extractPDFText(buffer);
       } else {
@@ -36,23 +28,58 @@ export async function POST(req: NextRequest) {
       }
       source = file.name;
     } else if (url) {
-      const res = await fetch(url);
-
       if (url.includes("arxiv.org")) {
         const pdfUrl = url.replace("/abs/", "/pdf/") + ".pdf";
         const pdfRes = await fetch(pdfUrl);
         const buffer = Buffer.from(await pdfRes.arrayBuffer());
         text = await extractPDFText(buffer);
       } else {
+        const res = await fetch(url);
         text = await res.text();
         text = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
       }
       source = url;
     }
 
-    if (!text) {
+    if (!text.trim()) {
       return NextResponse.json({ error: "No content extracted" }, { status: 400 });
     }
+
+    const chunks = chunkText(text, source, {
+      chunkSize: mode === "law" || mode === "law-pakistan" ? 300 : 512,
+      overlap: 50,
+    });
+
+    const embeddings = await embedBatch(chunks.map((c) => c.text));
+
+    if (!isSupabaseConfigured()) {
+      // ── In-memory path ──────────────────────────────────────────────────────
+      const doc = insertDocument({ title, mode, country: country ?? undefined, source });
+
+      insertChunks(
+        chunks.map((chunk, i) => ({
+          documentId: doc.id,
+          content: chunk.text,
+          embedding: embeddings[i],
+          metadata: chunk.metadata as Record<string, unknown>,
+        }))
+      );
+
+      return NextResponse.json({
+        success: true,
+        documentId: doc.id,
+        chunksProcessed: chunks.length,
+        title,
+        storage: "memory",
+      });
+    }
+
+    // ── Supabase path ────────────────────────────────────────────────────────
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_KEY!
+    );
 
     const { data: doc, error: docError } = await supabase
       .from("documents")
@@ -61,13 +88,6 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (docError) throw docError;
-
-    const chunks = chunkText(text, source, {
-      chunkSize: mode === "law" ? 300 : 512,
-      overlap: 50,
-    });
-
-    const embeddings = await embedBatch(chunks.map((c) => c.text));
 
     const chunkRows = chunks.map((chunk, i) => ({
       document_id: doc.id,
@@ -87,13 +107,11 @@ export async function POST(req: NextRequest) {
       documentId: doc.id,
       chunksProcessed: chunks.length,
       title,
+      storage: "supabase",
     });
   } catch (err: unknown) {
     console.error("Ingest error:", err);
     const message = err instanceof Error ? err.message : "Processing failed";
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

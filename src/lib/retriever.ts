@@ -1,5 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
 import { embedText } from "./embedder";
+import { isSupabaseConfigured, searchChunks } from "./memstore";
 
 export interface RetrievedChunk {
   text: string;
@@ -18,15 +18,22 @@ export async function retrieveRelevantChunks(
   documentId: string,
   topK: number = 5
 ): Promise<RetrievedChunk[]> {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+  const queryEmbedding = await embedText(query);
 
-  if (!supabaseUrl || !supabaseKey) {
-    throw new Error("Supabase environment variables are missing.");
+  if (!isSupabaseConfigured()) {
+    const rows = searchChunks(queryEmbedding, documentId, topK);
+    return rows.map((r) => ({
+      text: r.content,
+      similarity: r.similarity,
+      metadata: r.metadata,
+    }));
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey);
-  const queryEmbedding = await embedText(query);
+  const { createClient } = await import("@supabase/supabase-js");
+  const supabase = createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!
+  );
 
   const { data, error } = await supabase.rpc("match_chunks", {
     query_embedding: queryEmbedding,
@@ -38,7 +45,6 @@ export async function retrieveRelevantChunks(
   if (error) throw new Error(`Retrieval error: ${error.message}`);
 
   const rows = (data || []) as MatchChunkRow[];
-
   return rows.map((row) => ({
     text: row.content,
     similarity: row.similarity,
@@ -47,10 +53,19 @@ export async function retrieveRelevantChunks(
 }
 
 export function buildContext(chunks: RetrievedChunk[]): string {
-  return chunks
-    .sort((a, b) => b.similarity - a.similarity)
-    .map((c, i) => `[Passage ${i + 1}]\n${c.text}`)
-    .join("\n\n---\n\n");
+  // Cap total context at ~6000 chars (~1500 tokens) to stay within all LLM limits
+  const MAX_CONTEXT_CHARS = 6000;
+  const sorted = [...chunks].sort((a, b) => b.similarity - a.similarity);
+
+  let context = "";
+  let idx = 1;
+  for (const c of sorted) {
+    const passage = `[Passage ${idx}]\n${c.text}\n\n---\n\n`;
+    if (context.length + passage.length > MAX_CONTEXT_CHARS) break;
+    context += passage;
+    idx++;
+  }
+  return context.trim();
 }
 
 /*
