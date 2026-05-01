@@ -74,7 +74,25 @@ export function detectLegalSections(text: string): string[] {
 }
 
 export async function extractPDFText(buffer: Buffer): Promise<string> {
-  const pdfParse = await import("pdf-parse");
-  const data = await pdfParse.default(buffer);
-  return data.text;
+  try {
+    const pdfParse = await import("pdf-parse");
+    const data = await pdfParse.default(buffer);
+    const text = (data.text ?? "").trim();
+    if (text) return text;
+    throw new Error("PDF contained no extractable text");
+  } catch (err) {
+    // Fallback for malformed xref PDFs: recover long printable text runs.
+    const raw = buffer.toString("latin1");
+    const fragments = raw.match(/[ -~]{20,}/g) ?? [];
+    const recovered = fragments.join(" ").replace(/\s+/g, " ").trim();
+
+    if (recovered.length >= 200) {
+      return recovered;
+    }
+
+    const message = err instanceof Error ? err.message : "Unknown PDF parse error";
+    throw new Error(
+      `Failed to parse PDF. The file may be corrupted, scanned, or encrypted (${message}). Try re-exporting the PDF or uploading a text file.`
+    );
+  }
 }

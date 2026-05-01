@@ -19,7 +19,14 @@ function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<R
 export async function embedText(text: string): Promise<number[]> {
   // 1. NVIDIA NIM
   const nimKey = process.env.NVIDIA_API_KEY ?? "";
-  if (nimKey && nimKey.length > 10 && !nimKey.includes("xxxx")) {
+  const nimBaseUrl = process.env.NVIDIA_BASE_URL ?? "";
+  if (
+    nimKey &&
+    nimKey.length > 10 &&
+    !nimKey.includes("xxxx") &&
+    nimBaseUrl &&
+    !nimBaseUrl.includes("xxxx")
+  ) {
     try {
       return await embedWithNIM(text);
     } catch (e) {

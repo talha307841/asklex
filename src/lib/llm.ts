@@ -15,6 +15,16 @@ interface LLMResponse {
   provider: string;
 }
 
+function getNimConfig(): { baseUrl: string; apiKey: string } | null {
+  const baseUrl = (process.env.NVIDIA_BASE_URL ?? "").trim();
+  const apiKey = (process.env.NVIDIA_API_KEY ?? "").trim();
+
+  if (!baseUrl || !apiKey) return null;
+  if (baseUrl.includes("xxxx") || apiKey.includes("xxxx")) return null;
+
+  return { baseUrl, apiKey };
+}
+
 // Hard cap: keep total message text under ~20 000 chars (~5 000 tokens).
 // Trims the system message context section to fit.
 const MAX_TOTAL_CHARS = 20_000;
@@ -35,11 +45,16 @@ async function callNIM(
   messages: LLMMessage[],
   model: string = NIM_MODELS.smart
 ): Promise<string> {
-  const res = await fetch(`${process.env.NVIDIA_BASE_URL}/chat/completions`, {
+  const nim = getNimConfig();
+  if (!nim) {
+    throw new Error("NVIDIA NIM is not configured. Set NVIDIA_BASE_URL and NVIDIA_API_KEY.");
+  }
+
+  const res = await fetch(`${nim.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.NVIDIA_API_KEY}`,
+      Authorization: `Bearer ${nim.apiKey}`,
     },
     body: JSON.stringify({
       model,
@@ -134,11 +149,16 @@ export async function* streamNIM(
   messages: LLMMessage[],
   model: string = NIM_MODELS.smart
 ): AsyncGenerator<string> {
-  const res = await fetch(`${process.env.NVIDIA_BASE_URL}/chat/completions`, {
+  const nim = getNimConfig();
+  if (!nim) {
+    throw new Error("NVIDIA NIM is not configured. Set NVIDIA_BASE_URL and NVIDIA_API_KEY.");
+  }
+
+  const res = await fetch(`${nim.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.NVIDIA_API_KEY}`,
+      Authorization: `Bearer ${nim.apiKey}`,
     },
     body: JSON.stringify({
       model,

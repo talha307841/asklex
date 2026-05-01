@@ -23,8 +23,19 @@ export async function POST(req: NextRequest) {
 
     if (file) {
       const buffer = Buffer.from(await file.arrayBuffer());
-      if (file.type === "application/pdf") {
-        text = await extractPDFText(buffer);
+      const isPdf =
+        file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+      if (isPdf) {
+        try {
+          text = await extractPDFText(buffer);
+        } catch (e: unknown) {
+          const message =
+            e instanceof Error
+              ? e.message
+              : "Failed to parse PDF. Try a different file.";
+          return NextResponse.json({ error: message }, { status: 400 });
+        }
       } else {
         text = buffer.toString("utf-8");
       }
@@ -34,7 +45,15 @@ export async function POST(req: NextRequest) {
         const pdfUrl = url.replace("/abs/", "/pdf/") + ".pdf";
         const pdfRes = await fetch(pdfUrl);
         const buffer = Buffer.from(await pdfRes.arrayBuffer());
-        text = await extractPDFText(buffer);
+        try {
+          text = await extractPDFText(buffer);
+        } catch (e: unknown) {
+          const message =
+            e instanceof Error
+              ? e.message
+              : "Failed to parse PDF from URL. Try another source.";
+          return NextResponse.json({ error: message }, { status: 400 });
+        }
       } else {
         const res = await fetch(url);
         text = await res.text();
