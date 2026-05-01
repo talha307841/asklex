@@ -12,6 +12,21 @@ interface Message {
   model?: string;
 }
 
+async function parseApiResponse(res: Response): Promise<Record<string, unknown>> {
+  const contentType = res.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+
+  const text = await res.text();
+  return { error: text || `Request failed with status ${res.status}` };
+}
+
 const MODE_LABELS: Record<Mode, string> = {
   "law-pakistan": "🇵🇰 Pakistan Law",
   law: "⚖️ General Law",
@@ -52,6 +67,15 @@ export default function AskLexApp() {
       setIngestError("Please choose a file or enter a URL.");
       return;
     }
+
+    // Vercel serverless endpoints can reject larger multipart payloads.
+    if (file && file.size > 4 * 1024 * 1024) {
+      setIngestError(
+        "File is too large for deployment upload limits. Use a file under 4MB or ingest by URL."
+      );
+      return;
+    }
+
     setIngestError("");
     setIngesting(true);
 
@@ -64,18 +88,26 @@ export default function AskLexApp() {
       if (country) fd.append("country", country);
 
       const res = await fetch("/api/ingest", { method: "POST", body: fd });
-      const data = await res.json();
+      const data = await parseApiResponse(res);
 
-      if (!res.ok) throw new Error(data.error || "Ingest failed");
+      if (!res.ok) {
+        const message =
+          typeof data.error === "string"
+            ? data.error
+            : "Ingest failed. Please try a smaller file or URL.";
+        throw new Error(message);
+      }
 
-      setDocumentId(data.documentId);
-      setChunksProcessed(data.chunksProcessed);
-      setStorage(data.storage ?? "");
+      setDocumentId(String(data.documentId ?? ""));
+      setChunksProcessed(Number(data.chunksProcessed ?? 0));
+      setStorage(typeof data.storage === "string" ? data.storage : "");
       setStep("chat");
       setMessages([
         {
           role: "assistant",
-          content: `✅ Document ingested: **${data.title}** (${data.chunksProcessed} chunks). Ask me anything about it.`,
+          content: `✅ Document ingested: **${String(data.title ?? "Untitled")}** (${Number(
+            data.chunksProcessed ?? 0
+          )} chunks). Ask me anything about it.`,
         },
       ]);
     } catch (err: unknown) {
@@ -110,8 +142,9 @@ export default function AskLexApp() {
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Chat failed");
+        const data = await parseApiResponse(res);
+        const message = typeof data.error === "string" ? data.error : "Chat failed";
+        throw new Error(message);
       }
 
       const contentType = res.headers.get("content-type") ?? "";
@@ -150,14 +183,17 @@ export default function AskLexApp() {
         }
       } else {
         // ── JSON response ────────────────────────────────────────────────────
-        const data = await res.json();
+        const data = await parseApiResponse(res);
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: data.answer,
-            provider: data.provider,
-            model: data.model,
+            content:
+              typeof data.answer === "string"
+                ? data.answer
+                : "No answer returned from server.",
+            provider: typeof data.provider === "string" ? data.provider : undefined,
+            model: typeof data.model === "string" ? data.model : undefined,
           },
         ]);
       }
