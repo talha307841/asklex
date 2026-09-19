@@ -1,489 +1,55 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Mode = "law-pakistan" | "law" | "research" | "persona" | "general";
 type Step = "ingest" | "chat";
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  provider?: string;
-  model?: string;
-}
+interface Message { role: "user" | "assistant"; content: string; provider?: string; model?: string; }
+const MODE_LABELS: Record<Mode, string> = { "law-pakistan": "Pakistan Law", law: "General Law", research: "Research Paper", persona: "Persona", general: "General Document" };
 
 async function parseApiResponse(res: Response): Promise<Record<string, unknown>> {
   const contentType = res.headers.get("content-type") ?? "";
-
-  if (contentType.includes("application/json")) {
-    try {
-      return (await res.json()) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
-
-  const text = await res.text();
-  const normalized = text.trim();
-
-  // Vercel/Next may return an HTML error document for platform-level failures.
-  if (normalized.startsWith("<!DOCTYPE html") || normalized.startsWith("<html")) {
-    if (res.status === 413) {
-      return { error: "Upload is too large for deployment limits. Use a smaller file or a URL." };
-    }
-    return { error: "Server error on deployment. Check API logs and try again." };
-  }
-
-  if (/request entity too large/i.test(normalized)) {
-    return { error: "Upload is too large for deployment limits. Use a smaller file or a URL." };
-  }
-
-  return { error: normalized || `Request failed with status ${res.status}` };
+  if (contentType.includes("application/json")) { try { return (await res.json()) as Record<string, unknown>; } catch { return {}; } }
+  const text = (await res.text()).trim();
+  if (res.status === 413 || /request entity too large/i.test(text)) return { error: "Upload is too large for deployment limits. Use a smaller file or a URL." };
+  return { error: text || `Request failed with status ${res.status}` };
 }
 
-const MODE_LABELS: Record<Mode, string> = {
-  "law-pakistan": "🇵🇰 Pakistan Law",
-  law: "⚖️ General Law",
-  research: "🔬 Research Paper",
-  persona: "🎭 Persona",
-  general: "📄 General Document",
-};
-
 export default function AskLexApp() {
-  // ── ingest state ──────────────────────────────────────────────────────────
-  const [step, setStep] = useState<Step>("ingest");
-  const [mode, setMode] = useState<Mode>("general");
-  const [country, setCountry] = useState("Pakistan");
-  const [title, setTitle] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [url, setUrl] = useState("");
-  const [ingesting, setIngesting] = useState(false);
-  const [ingestError, setIngestError] = useState("");
-  const [documentId, setDocumentId] = useState("");
-  const [chunksProcessed, setChunksProcessed] = useState(0);
-  const [storage, setStorage] = useState("");
+  const [step, setStep] = useState<Step>("ingest"); const [mode, setMode] = useState<Mode>("general"); const [country, setCountry] = useState("Pakistan");
+  const [title, setTitle] = useState(""); const [file, setFile] = useState<File | null>(null); const [url, setUrl] = useState(""); const [ingesting, setIngesting] = useState(false); const [ingestError, setIngestError] = useState("");
+  const [documentId, setDocumentId] = useState(""); const [chunksProcessed, setChunksProcessed] = useState(0); const [messages, setMessages] = useState<Message[]>([]); const [question, setQuestion] = useState(""); const [chatLoading, setChatLoading] = useState(false); const [chatError, setChatError] = useState(""); const chatEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // ── chat state ────────────────────────────────────────────────────────────
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [question, setQuestion] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const [chatError, setChatError] = useState("");
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  // ── ingest handler ────────────────────────────────────────────────────────
   async function handleIngest(e: React.FormEvent) {
-    e.preventDefault();
-    if (!file && !url.trim()) {
-      setIngestError("Please choose a file or enter a URL.");
-      return;
-    }
-
-    // Vercel serverless endpoints can reject larger multipart payloads.
-    // Keep a margin below serverless multipart limits.
-    if (file && file.size > 3 * 1024 * 1024) {
-      setIngestError(
-        "File is too large for deployment upload limits. Use a file under 3MB or ingest by URL."
-      );
-      return;
-    }
-
-    setIngestError("");
-    setIngesting(true);
-
-    try {
-      const fd = new FormData();
-      if (file) fd.append("file", file);
-      if (url.trim()) fd.append("url", url.trim());
-      fd.append("mode", mode);
-      fd.append("title", title || (file?.name ?? url));
-      if (country) fd.append("country", country);
-
-      const res = await fetch("/api/ingest", { method: "POST", body: fd });
-      const data = await parseApiResponse(res);
-
-      if (!res.ok) {
-        const message =
-          typeof data.error === "string"
-            ? data.error
-            : "Ingest failed. Please try a smaller file or URL.";
-        throw new Error(message);
-      }
-
-      setDocumentId(String(data.documentId ?? ""));
-      setChunksProcessed(Number(data.chunksProcessed ?? 0));
-      setStorage(typeof data.storage === "string" ? data.storage : "");
-      setStep("chat");
-      setMessages([
-        {
-          role: "assistant",
-          content: `✅ Document ingested: **${String(data.title ?? "Untitled")}** (${Number(
-            data.chunksProcessed ?? 0
-          )} chunks). Ask me anything about it.`,
-        },
-      ]);
-    } catch (err: unknown) {
-      setIngestError(err instanceof Error ? err.message : "Ingest failed");
-    } finally {
-      setIngesting(false);
-    }
+    e.preventDefault(); if (!file && !url.trim()) { setIngestError("Please choose a file or enter a URL."); return; }
+    if (file && file.size > 3 * 1024 * 1024) { setIngestError("File is too large for deployment upload limits. Use a file under 3MB or ingest by URL."); return; }
+    setIngestError(""); setIngesting(true);
+    try { const formData = new FormData(); if (file) formData.append("file", file); if (url.trim()) formData.append("url", url.trim()); formData.append("mode", mode); formData.append("title", title || file?.name || url); formData.append("country", country);
+      const res = await fetch("/api/ingest", { method: "POST", body: formData }); const data = await parseApiResponse(res); if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : "Ingest failed.");
+      setDocumentId(String(data.documentId ?? "")); setChunksProcessed(Number(data.chunksProcessed ?? 0)); setStep("chat"); setMessages([{ role: "assistant", content: `Document ingested: ${String(data.title ?? "Untitled")}. Ask me anything about it.` }]);
+    } catch (err: unknown) { setIngestError(err instanceof Error ? err.message : "Ingest failed"); } finally { setIngesting(false); }
   }
 
-  // ── chat handler ──────────────────────────────────────────────────────────
   async function handleChat(e: React.FormEvent) {
-    e.preventDefault();
-    if (!question.trim()) return;
-    setChatError("");
-
-    const userMsg: Message = { role: "user", content: question };
-    setMessages((prev) => [...prev, userMsg]);
-    setQuestion("");
-    setChatLoading(true);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: userMsg.content,
-          documentId,
-          mode,
-          country,
-          stream: true,
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await parseApiResponse(res);
-        const message = typeof data.error === "string" ? data.error : "Chat failed";
-        throw new Error(message);
-      }
-
-      const contentType = res.headers.get("content-type") ?? "";
-
-      if (contentType.includes("text/event-stream") && res.body) {
-        // ── SSE streaming ────────────────────────────────────────────────────
-        const assistantMsg: Message = { role: "assistant", content: "" };
-        setMessages((prev) => [...prev, assistantMsg]);
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const raw = decoder.decode(value);
-          const lines = raw.split("\n").filter((l) => l.startsWith("data: "));
-
-          for (const line of lines) {
-            const payload = line.slice(6);
-            if (payload === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(payload);
-              if (parsed.token) {
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    ...updated[updated.length - 1],
-                    content: updated[updated.length - 1].content + parsed.token,
-                  };
-                  return updated;
-                });
-              }
-            } catch {}
-          }
-        }
-      } else {
-        // ── JSON response ────────────────────────────────────────────────────
-        const data = await parseApiResponse(res);
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content:
-              typeof data.answer === "string"
-                ? data.answer
-                : "No answer returned from server.",
-            provider: typeof data.provider === "string" ? data.provider : undefined,
-            model: typeof data.model === "string" ? data.model : undefined,
-          },
-        ]);
-      }
-    } catch (err: unknown) {
-      setChatError(err instanceof Error ? err.message : "Chat failed");
-    } finally {
-      setChatLoading(false);
-    }
+    e.preventDefault(); if (!question.trim()) return; const userMsg: Message = { role: "user", content: question }; setMessages((prev) => [...prev, userMsg]); setQuestion(""); setChatError(""); setChatLoading(true);
+    try { const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: userMsg.content, documentId, mode, country, stream: true }) });
+      if (!res.ok) { const data = await parseApiResponse(res); throw new Error(typeof data.error === "string" ? data.error : "Chat failed"); } const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream") && res.body) { setMessages((prev) => [...prev, { role: "assistant", content: "" }]); const reader = res.body.getReader(); const decoder = new TextDecoder();
+        while (true) { const { done, value } = await reader.read(); if (done) break; for (const line of decoder.decode(value).split("\n").filter((item) => item.startsWith("data: "))) { const payload = line.slice(6); if (payload === "[DONE]") continue; try { const parsed = JSON.parse(payload); if (parsed.token) setMessages((prev) => [...prev.slice(0, -1), { ...prev[prev.length - 1], content: prev[prev.length - 1].content + parsed.token }]); } catch { /* Ignore partial SSE payloads. */ } } }
+      } else { const data = await parseApiResponse(res); setMessages((prev) => [...prev, { role: "assistant", content: typeof data.answer === "string" ? data.answer : "No answer returned from server.", provider: typeof data.provider === "string" ? data.provider : undefined, model: typeof data.model === "string" ? data.model : undefined }]); }
+    } catch (err: unknown) { setChatError(err instanceof Error ? err.message : "Chat failed"); } finally { setChatLoading(false); }
   }
+  function resetWorkspace() { setStep("ingest"); setDocumentId(""); setMessages([]); setFile(null); setUrl(""); setTitle(""); }
+  const modeIcon = (value: Mode) => value === "law-pakistan" ? "✦" : value === "law" ? "§" : value === "research" ? "⌁" : value === "persona" ? "◌" : "□";
 
-  // ── render ────────────────────────────────────────────────────────────────
-  return (
-    <div className="flex min-h-screen flex-col bg-zinc-50 dark:bg-black">
-      {/* Header */}
-      <header className="flex items-center justify-between border-b border-black/10 bg-white px-6 py-4 dark:border-white/10 dark:bg-zinc-900">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
-            AskLex
-          </span>
-          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-            beta
-          </span>
-        </div>
-        {step === "chat" && (
-          <button
-            onClick={() => {
-              setStep("ingest");
-              setDocumentId("");
-              setMessages([]);
-              setFile(null);
-              setUrl("");
-              setTitle("");
-            }}
-            className="rounded-lg border border-black/10 px-3 py-1.5 text-sm text-zinc-600 transition hover:bg-zinc-100 dark:border-white/10 dark:text-zinc-400 dark:hover:bg-zinc-800"
-          >
-            ← New document
-          </button>
-        )}
-      </header>
-
-      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-4 py-8">
-        {step === "ingest" ? (
-          /* ── Step 1: Ingest ─────────────────────────────────────────────── */
-          <form
-            onSubmit={handleIngest}
-            className="flex flex-col gap-5 rounded-2xl border border-black/10 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-900"
-          >
-            <h2 className="text-xl font-semibold text-zinc-900 dark:text-white">
-              Upload a document
-            </h2>
-
-            {/* Mode */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Mode
-              </label>
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value as Mode)}
-                className="rounded-lg border border-black/10 bg-zinc-50 px-3 py-2 text-sm dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-100"
-              >
-                {(Object.keys(MODE_LABELS) as Mode[]).map((m) => (
-                  <option key={m} value={m}>
-                    {MODE_LABELS[m]}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Country (only for law modes) */}
-            {(mode === "law" || mode === "law-pakistan") && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                  Country
-                </label>
-                <input
-                  type="text"
-                  value={country}
-                  onChange={(e) => setCountry(e.target.value)}
-                  placeholder="e.g. Pakistan"
-                  className="rounded-lg border border-black/10 bg-zinc-50 px-3 py-2 text-sm dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-100"
-                />
-              </div>
-            )}
-
-            {/* Title */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Document title{" "}
-                <span className="text-zinc-400 dark:text-zinc-500">(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Pakistan Penal Code 1860"
-                className="rounded-lg border border-black/10 bg-zinc-50 px-3 py-2 text-sm dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-100"
-              />
-            </div>
-
-            {/* File upload */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Upload PDF or text file
-              </label>
-              <input
-                type="file"
-                accept=".pdf,.txt,.md"
-                onChange={(e) => {
-                  setFile(e.target.files?.[0] ?? null);
-                  setUrl("");
-                }}
-                className="rounded-lg border border-dashed border-black/20 bg-zinc-50 px-3 py-3 text-sm text-zinc-600 dark:border-white/20 dark:bg-zinc-800 dark:text-zinc-400"
-              />
-            </div>
-
-            {/* OR URL */}
-            <div className="flex items-center gap-3">
-              <div className="flex-1 border-t border-black/10 dark:border-white/10" />
-              <span className="text-xs text-zinc-400">or</span>
-              <div className="flex-1 border-t border-black/10 dark:border-white/10" />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                URL{" "}
-                <span className="text-zinc-400 dark:text-zinc-500">
-                  (arXiv, webpage)
-                </span>
-              </label>
-              <input
-                type="url"
-                value={url}
-                onChange={(e) => {
-                  setUrl(e.target.value);
-                  setFile(null);
-                }}
-                placeholder="https://arxiv.org/abs/2310.xxxxx"
-                className="rounded-lg border border-black/10 bg-zinc-50 px-3 py-2 text-sm dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-100"
-              />
-            </div>
-
-            {ingestError && (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950 dark:text-red-400">
-                {ingestError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={ingesting}
-              className="flex h-11 items-center justify-center gap-2 rounded-xl bg-zinc-900 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
-            >
-              {ingesting ? (
-                <>
-                  <svg
-                    className="h-4 w-4 animate-spin"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8H4z"
-                    />
-                  </svg>
-                  Ingesting…
-                </>
-              ) : (
-                "Ingest document"
-              )}
-            </button>
-          </form>
-        ) : (
-          /* ── Step 2: Chat ───────────────────────────────────────────────── */
-          <div className="flex flex-1 flex-col gap-4">
-            {/* Info bar */}
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-black/10 bg-white px-4 py-2.5 text-xs text-zinc-500 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-400">
-              <span className="font-medium text-zinc-700 dark:text-zinc-200">
-                {MODE_LABELS[mode]}
-              </span>
-              <span>·</span>
-              <span>{chunksProcessed} chunks</span>
-              {storage && (
-                <>
-                  <span>·</span>
-                  <span>storage: {storage}</span>
-                </>
-              )}
-              <span>·</span>
-              <span className="font-mono text-xs">{documentId.slice(0, 12)}…</span>
-            </div>
-
-            {/* Messages */}
-            <div className="flex flex-1 flex-col gap-4 overflow-y-auto rounded-2xl border border-black/10 bg-white p-5 dark:border-white/10 dark:bg-zinc-900" style={{ minHeight: "420px", maxHeight: "60vh" }}>
-              {messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
-                >
-                  <div
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
-                      msg.role === "user"
-                        ? "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
-                        : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-                    }`}
-                  >
-                    {msg.role === "user" ? "You" : "AI"}
-                  </div>
-                  <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-                      msg.role === "user"
-                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                        : "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
-                    }`}
-                  >
-                    {msg.content}
-                    {msg.provider && (
-                      <p className="mt-1.5 text-xs opacity-50">
-                        via {msg.provider} · {msg.model}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {chatLoading && (
-                <div className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                    AI
-                  </div>
-                  <div className="rounded-2xl bg-zinc-100 px-4 py-2.5 text-sm dark:bg-zinc-800">
-                    <span className="animate-pulse">Thinking…</span>
-                  </div>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            {chatError && (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950 dark:text-red-400">
-                {chatError}
-              </p>
-            )}
-
-            {/* Input */}
-            <form onSubmit={handleChat} className="flex gap-2">
-              <input
-                type="text"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask a question about the document…"
-                disabled={chatLoading}
-                className="flex-1 rounded-xl border border-black/10 bg-white px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-zinc-900 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:ring-zinc-100"
-              />
-              <button
-                type="submit"
-                disabled={chatLoading || !question.trim()}
-                className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 text-white transition hover:bg-zinc-700 disabled:opacity-40 dark:bg-white dark:text-zinc-900"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                  <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-                </svg>
-              </button>
-            </form>
-          </div>
-        )}
-      </main>
-    </div>
-  );
+  return <div className="asklex-shell">
+    <header className="asklex-nav"><a className="asklex-brand" href="#top"><span className="asklex-mark">A</span><span>asklex</span><span className="asklex-beta">beta</span></a><nav className="asklex-nav-links"><a href="#how-it-works">How it works</a><a href="#capabilities">Capabilities</a></nav><a className="asklex-nav-cta" href="#workspace">Try AskLex <span>↗</span></a></header>
+    <main id="top">
+      <section className="asklex-hero"><div className="asklex-hero-copy"><p className="asklex-eyebrow"><span className="asklex-pulse" /> Intelligent document research</p><h1>Read less.<br /><em>Understand more.</em></h1><p className="asklex-lede">AskLex turns dense legal documents and research papers into clear, source-grounded answers you can actually use.</p><div className="asklex-hero-actions"><a className="asklex-primary-button" href="#workspace">Start with a document <span>↓</span></a><span className="asklex-no-card"><span>✦</span> No credit card required</span></div></div><div className="asklex-hero-art"><div className="asklex-orbit orbit-one" /><div className="asklex-orbit orbit-two" /><div className="asklex-art-card art-back"><span>§</span><strong>42</strong><small>relevant passages</small></div><div className="asklex-art-card art-front"><span className="art-kicker">ASKLEX / INSIGHT</span><p>“The answer is<br /><strong>already in here.</strong>”</p><div className="art-lines"><i /><i /><i /></div></div><span className="art-dot dot-a" /><span className="art-dot dot-b" /><span className="art-dot dot-c" /></div></section>
+      <section id="workspace" className="asklex-workspace-section"><div className="section-heading"><div><p className="asklex-eyebrow">Your research desk</p><h2>Bring the context.<br /><em>Ask the question.</em></h2></div><p>Upload a file or paste a URL. AskLex finds the signal, then stays with you while you explore it.</p></div><div className="asklex-workspace"><div className="workspace-rail"><div className="rail-label">Choose your lens</div>{(Object.keys(MODE_LABELS) as Mode[]).map((value) => <button key={value} type="button" className={`rail-mode ${mode === value ? "active" : ""}`} onClick={() => setMode(value)}><span className="rail-icon">{modeIcon(value)}</span><span>{MODE_LABELS[value]}</span>{mode === value && <span className="rail-check">✓</span>}</button>)}<div className="rail-note"><span>✦</span><p>Answers stay grounded in your source material.</p></div></div>{step === "ingest" ? <form onSubmit={handleIngest} className="ingest-panel"><div className="panel-topline"><span className="status-dot" /> Ready when you are <span>01 / 02</span></div><div className="ingest-title"><h3>What are we reading?</h3><p>Start with a document, paper, or public webpage.</p></div><div className="drop-zone"><label htmlFor="document-file" className="drop-zone-label"><span className="upload-icon">↑</span><strong>{file ? file.name : "Drop your document here"}</strong><small>PDF, TXT, or Markdown · up to 3MB</small><span className="browse-button">Browse files</span></label><input id="document-file" type="file" accept=".pdf,.txt,.md" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setUrl(""); }} /></div><div className="or-divider"><span>or use a public URL</span></div><div className="url-field"><span>↗</span><input type="url" value={url} onChange={(e) => { setUrl(e.target.value); setFile(null); }} placeholder="Paste an arXiv, webpage, or document URL" /></div><div className="title-row"><input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Name this document (optional)" /><button type="submit" disabled={ingesting}>{ingesting ? "Reading..." : "Read document  →"}</button></div>{(mode === "law" || mode === "law-pakistan") && <input className="country-field" type="text" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Jurisdiction, e.g. Pakistan" />}{ingestError && <p className="form-error">{ingestError}</p>}</form> : <div className="chat-panel"><div className="chat-panel-header"><div><span className="status-dot" /> Source loaded</div><button type="button" onClick={resetWorkspace}>+ New document</button></div><div className="chat-messages">{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.content}</div>)}{chatLoading && <div className="chat-message assistant">Thinking...</div>}<div ref={chatEndRef} /></div>{chatError && <p className="form-error">{chatError}</p>}<form onSubmit={handleChat} className="chat-input"><input type="text" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask anything about your document..." disabled={chatLoading} /><button type="submit" disabled={chatLoading || !question.trim()} aria-label="Send question">↑</button></form><div className="chat-meta">{chunksProcessed} passages indexed <span>·</span> {MODE_LABELS[mode]}</div></div>}</div></section>
+      <section id="capabilities" className="capabilities-section"><div className="section-heading compact"><div><p className="asklex-eyebrow">Built for the hard parts</p><h2>One place for <em>deep work.</em></h2></div></div><div className="capability-grid"><article><span>01</span><h3>Source-grounded</h3><p>Get answers from the documents you provide, not a vague cloud of internet knowledge.</p></article><article><span>02</span><h3>Research-ready</h3><p>Move from a question to the exact passages that help you make your case.</p></article><article><span>03</span><h3>Made for nuance</h3><p>Switch between legal, research, persona, and general document lenses in one workspace.</p></article></div></section>
+      <section id="how-it-works" className="workflow-section"><div className="workflow-intro"><p className="asklex-eyebrow">A calmer way to work</p><h2>From document<br />to <em>direction.</em></h2></div><div className="workflow-steps"><div><span>01</span><strong>Bring your source</strong><p>Upload a file or point AskLex to a public URL.</p></div><div><span>02</span><strong>Choose your lens</strong><p>Set the context that makes the answer useful.</p></div><div><span>03</span><strong>Find your answer</strong><p>Ask follow-ups and keep the thread grounded.</p></div></div></section>
+    </main><footer className="asklex-footer"><a className="asklex-brand" href="#top"><span className="asklex-mark">A</span><span>asklex</span></a><span>For the curious, the careful, and the deeply busy.</span><span>© 2026 AskLex</span></footer>
+  </div>;
 }
